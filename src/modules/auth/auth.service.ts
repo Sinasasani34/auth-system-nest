@@ -1,13 +1,15 @@
-import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { UserEntity } from '../user/entities/user.entity';
 import { Repository } from 'typeorm';
 import { OTPEntity } from '../user/entities/otp.entity';
-import { CheckOtpDto, SendOtpDto } from './dto/auth.dto';
+import { CheckOtpDto, SendOtpDto } from './dto/otp.dto';
 import { randomInt } from 'crypto';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { TokensPayload } from './types/payload';
+import { LoginDto, SignupDto } from './dto/basic.dto';
+import { hashSync, genSaltSync, compareSync } from "bcrypt"
 
 @Injectable()
 export class AuthService {
@@ -67,6 +69,51 @@ export class AuthService {
         }
     }
 
+    async signup(signupDto: SignupDto) {
+        const { first_name, last_name, email, password, mobile } = signupDto;
+        await this.checkEmail(email);
+        await this.checkMobile(mobile);
+        let hashedPassword = this.hashPassword(password);
+        const user = this.userRepository.create({
+            first_name,
+            last_name,
+            mobile,
+            email,
+            password: hashedPassword,
+            mobile_verify: false,
+        });
+        await this.userRepository.save(user);
+        return {
+            message: "ایجاد و ورود به حساب کاربری با موفقیت انجام شد"
+        }
+    }
+
+    async login(loginDto: LoginDto) {
+        const { email, password, } = loginDto;
+        const user = await this.userRepository.findOneBy({ email });
+        if (!user) {
+            throw new UnauthorizedException("نام کاربری یا رمز عبور نادرست است");
+        }
+        if (!compareSync(password, user.password)) {
+            throw new UnauthorizedException("نام کاربری یا رمز عبور نادرست است");
+        }
+        const { accessToken, refreshToken } = this.makeTokensForUser({ mobile: user.mobile, id: user.id });
+        return {
+            accessToken,
+            refreshToken,
+            message: "ورود به حساب کاربری با موفقیت انجام شد"
+        }
+    }
+
+    async checkEmail(email: string) {
+        const user = await this.userRepository.findOneBy({ email });
+        if (user) throw new ConflictException("ایمیل در سامانه ثبت شده است")
+    }
+    async checkMobile(mobile: string) {
+        const user = await this.userRepository.findOneBy({ mobile });
+        if (user) throw new ConflictException("شماره تماس در سامانه ثبت شده است")
+    }
+
     async createOtpForUser(user: UserEntity) {
         const expires_in = new Date(new Date().getTime() + (1000 * 60 * 2));
         let otp = await this.otpRepository.findOneBy({ userId: user.id });
@@ -104,13 +151,36 @@ export class AuthService {
         }
     }
 
+    // async validateAccessToken(token: string) {
+    //     try {
+
+    //         const payload = this.jwtService.verify<TokensPayload>(token, {
+    //             secret: this.configService.get("JWT.accessTokenSecret"),
+    //         });
+    //         console.log("Secret Key => ", this.configService.get("JWT.accessTokenSecret"));
+    //         console.log("Access Token => ", token);
+    //         if (typeof payload === "object" && payload?.id) {
+    //             const user = await this.userRepository.findOneBy({ id: payload.id });
+    //             if (!user) {
+    //                 throw new UnauthorizedException("وارد حساب کاربری خود شوید");
+    //             }
+    //             return user;
+    //         }
+    //         throw new UnauthorizedException("وارد حساب کاربری خود شوید");
+    //     } catch (error) {
+    //         console.log(error)
+    //         throw new UnauthorizedException("وارد حساب کاربری خود شوید");
+    //     }
+    // }
+
     async validateAccessToken(token: string) {
         try {
-            const payload = this.jwtService.verify<TokensPayload>(token, {
+            const decodedToken: any = this.jwtService.verify(token, {
                 secret: this.configService.get("JWT.accessTokenSecret"),
             });
-            if (typeof payload === "object" && payload?.id) {
-                const user = await this.userRepository.findOneBy({ id: payload.id });
+            const actualPayload = decodedToken.payload;
+            if (typeof actualPayload === "object" && actualPayload !== null && actualPayload?.id) {
+                const user = await this.userRepository.findOneBy({ id: actualPayload.id });
                 if (!user) {
                     throw new UnauthorizedException("وارد حساب کاربری خود شوید");
                 }
@@ -118,7 +188,13 @@ export class AuthService {
             }
             throw new UnauthorizedException("وارد حساب کاربری خود شوید");
         } catch (error) {
+            console.error(error);
             throw new UnauthorizedException("وارد حساب کاربری خود شوید");
         }
+    }
+
+    hashPassword(password: string) {
+        const salt = genSaltSync(10);
+        return hashSync(password, salt);
     }
 }
